@@ -1,151 +1,134 @@
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
 
-# Set the title and favicon that appear in the Browser's tab bar.
+# Set Streamlit page configuration
 st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
+    page_title='AGP Dashboard',
+    page_icon=':bar_chart:',
 )
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# --------------------------------------------------------------------
+# Data Processing Functions
+# --------------------------------------------------------------------
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+def load_data(file_path):
+    """Load and preprocess the dataset."""
+    df = pd.ExcelFile(file_path).parse('Sheet1')
+    df['Χρονική σήμανση συσκευής'] = pd.to_datetime(df['Χρονική σήμανση συσκευής'])
+    df.rename(columns={
+        'Χρονική σήμανση συσκευής': 'Timestamp',
+        'Ιστορική γλυκόζη mg/dL': 'Glucose'
+    }, inplace=True)
+    return df
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+def compute_agp_summary(data):
+    """Compute AGP summary statistics."""
+    target_range = (70, 180)
+    low_range = (54, 69)
+    very_low_range = (0, 53)
+    high_range = (181, 250)
+    very_high_range = (251, float('inf'))
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+    summary = {
+        'Total Readings': len(data),
+        'Time in Target Range (70-180 mg/dL) (%)': data['Glucose'].between(*target_range).mean() * 100,
+        'Time Below Range (54-69 mg/dL) (%)': data['Glucose'].between(*low_range).mean() * 100,
+        'Time Very Low (<54 mg/dL) (%)': data['Glucose'].between(*very_low_range).mean() * 100,
+        'Time Above Range (181-250 mg/dL) (%)': data['Glucose'].between(*high_range).mean() * 100,
+        'Time Very High (>250 mg/dL) (%)': data['Glucose'].between(*very_high_range).mean() * 100,
+        'Mean Glucose (mg/dL)': data['Glucose'].mean(),
+        'Coefficient of Variation (%CV)': (data['Glucose'].std() / data['Glucose'].mean()) * 100,
+    }
+    return summary
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+def compute_daily_profiles(data):
+    """Compute daily glucose profiles."""
+    data['Date'] = data['Timestamp'].dt.date
+    daily_stats = data.groupby('Date')['Glucose'].agg(
+        Min='min', Max='max', Mean='mean'
+    ).reset_index()
+    return daily_stats
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+def compute_agp(data):
+    """Compute glucose variability statistics by time of day."""
+    data['Time of Day'] = data['Timestamp'].dt.hour + data['Timestamp'].dt.minute / 60
+    grouped = data.groupby('Time of Day')['Glucose']
+    agp_stats = grouped.agg(
+        Median='median',
+        Percentile5=lambda x: np.percentile(x, 5),
+        Percentile25=lambda x: np.percentile(x, 25),
+        Percentile75=lambda x: np.percentile(x, 75),
+        Percentile95=lambda x: np.percentile(x, 95)
     )
+    return agp_stats.reset_index()
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+# --------------------------------------------------------------------
+# Visualization Functions
+# --------------------------------------------------------------------
 
-    return gdp_df
+def plot_time_in_range_stacked_vertical(summary):
+    """Plot vertical stacked bar chart for Time in Range."""
+    ranges = ['Very Low (<54 mg/dL)', 'Low (54-69 mg/dL)', 'Target (70-180 mg/dL)', 'High (181-250 mg/dL)', 'Very High (>250 mg/dL)']
+    percentages = [
+        summary['Time Very Low (<54 mg/dL) (%)'],
+        summary['Time Below Range (54-69 mg/dL) (%)'],
+        summary['Time in Target Range (70-180 mg/dL) (%)'],
+        summary['Time Above Range (181-250 mg/dL) (%)'],
+        summary['Time Very High (>250 mg/dL) (%)']
+    ]
+    colors = ['#ff6666', '#ffc000', '#8fd9b6', '#ffcc99', '#ff9999']
 
-gdp_df = get_gdp_data()
+    fig, ax = plt.subplots(figsize=(6, 8))
+    cumulative = np.zeros(1)
+    for range_name, pct, color in zip(ranges, percentages, colors):
+        ax.bar([0], [pct], bottom=cumulative, color=color, edgecolor='black', width=0.5)
+        cumulative += pct
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+    ax.set_ylim(0, 100)
+    ax.set_yticks(range(0, 101, 10))
+    ax.set_title('ΧΡΟΝΟΣ ΕΝΤΟΣ ΕΥΡΟΥΣ ΣΤΟΧΩΝ', fontsize=16, fontweight='bold')
+    ax.set_ylabel('Percentage (%)', fontsize=12)
+    ax.grid(axis='y', linestyle='--', alpha=0.5)
+    return fig
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+def plot_agp(agp_data):
+    """Plot AGP graph."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.fill_between(agp_data['Time of Day'], agp_data['Percentile5'], agp_data['Percentile95'], color='lightblue', alpha=0.5, label='5th-95th Percentile')
+    ax.fill_between(agp_data['Time of Day'], agp_data['Percentile25'], agp_data['Percentile75'], color='blue', alpha=0.3, label='25th-75th Percentile')
+    ax.plot(agp_data['Time of Day'], agp_data['Median'], color='darkblue', linewidth=2, label='Median (50th Percentile)')
+    ax.axhspan(70, 180, color='green', alpha=0.1, label='Target Range (70-180 mg/dL)')
+    ax.set_title('ΠΡΟΦΙΛ ΔΙΑΚΥΜΑΝΣΗΣ ΓΛΥΚΟΖΗΣ (AGP)', fontsize=16, fontweight='bold')
+    ax.set_xlabel('Time of Day (Hours)', fontsize=12)
+    ax.set_ylabel('Glucose (mg/dL)', fontsize=12)
+    return fig
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+# --------------------------------------------------------------------
+# Streamlit Application
+# --------------------------------------------------------------------
 
-# Add some spacing
-''
-''
+st.title("Ambulatory Glucose Profile (AGP) Report")
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
+uploaded_file = st.file_uploader("Upload your AGP dataset (Excel format)", type=["xlsx"])
 
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
+if uploaded_file:
+    data = load_data(uploaded_file)
 
-countries = gdp_df['Country Code'].unique()
+    # Summary
+    summary = compute_agp_summary(data)
+    st.header("AGP Summary")
+    st.write(f"**Mean Glucose:** {summary['Mean Glucose (mg/dL)']:.1f} mg/dL")
+    gmi = 3.31 + 0.02392 * summary['Mean Glucose (mg/dL)']
+    st.write(f"**GMI:** {gmi:.1f}%")
+    st.pyplot(plot_time_in_range_stacked_vertical(summary))
 
-if not len(countries):
-    st.warning("Select at least one country")
+    # AGP
+    agp_data = compute_agp(data)
+    st.pyplot(plot_agp(agp_data))
 
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+    # Daily Profiles
+    daily_profiles = compute_daily_profiles(data)
+    st.header("Daily Profiles")
+    st.dataframe(daily_profiles)
