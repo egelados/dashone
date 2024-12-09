@@ -132,3 +132,52 @@ if uploaded_file:
     daily_profiles = compute_daily_profiles(data)
     st.header("Daily Profiles")
     st.dataframe(daily_profiles)
+
+
+
+
+import duckdb
+
+# Function to save data to DuckDB
+def save_to_duckdb(df, table_name="editable_data"):
+    conn = duckdb.connect("data_store.duckdb")
+    conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} (id INTEGER, name STRING, age INTEGER, email STRING)")
+    conn.execute(f"DELETE FROM {table_name}")  # Clear the table before saving
+    conn.execute(f"INSERT INTO {table_name} SELECT * FROM df")
+    conn.close()
+
+# Initial data
+initial_data = [
+    {"id": 1, "name": "Alice", "age": 30, "email": "alice@example.com"},
+    {"id": 2, "name": "Bob", "age": 25, "email": "bob@example.com"},
+    {"id": 3, "name": "Charlie", "age": 35, "email": "charlie@example.com"},
+]
+
+# Load or initialize the dataframe
+if "data" not in st.session_state:
+    st.session_state.data = pd.DataFrame(initial_data)
+
+# Editable dataframe
+st.write("### Editable DataFrame")
+edited_df = st.data_editor(
+    st.session_state.data,
+    key="data_editor",
+    use_container_width=True
+)
+
+# Display the edited dataframe
+st.write("### Current Data")
+st.dataframe(edited_df, use_container_width=True)
+
+# Save the data to DuckDB
+if st.button("Save to Database"):
+    save_to_duckdb(edited_df)
+    st.success("Data saved to DuckDB successfully!")
+
+# Optionally: Display the saved data
+if st.button("Load Data from Database"):
+    conn = duckdb.connect("data_store.duckdb")
+    saved_data = conn.execute("SELECT * FROM editable_data").fetchdf()
+    conn.close()
+    st.write("### Saved Data")
+    st.dataframe(saved_data, use_container_width=True)
